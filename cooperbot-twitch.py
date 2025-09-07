@@ -2,6 +2,7 @@ import asyncio
 import os
 import aiohttp
 import json
+from datetime import datetime
 from dotenv import load_dotenv
 from twitchio.ext import commands
 
@@ -18,6 +19,13 @@ class SimpleBot(commands.Bot):
 
         # Load system prompt from file
         self.system_prompt = self.load_system_prompt()
+
+        # Load ignored users list
+        self.ignored_users = self.load_ignored_users()
+
+        # Initialize logging
+        self.log_filename = f"bot_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        self.init_log_file()
 
         # Initialize bot
         super().__init__(
@@ -38,6 +46,51 @@ class SimpleBot(commands.Bot):
             print(f"Error reading system_prompt.txt: {e}")
             return """You are a helpful Twitch chatbot. Keep responses short and friendly (under 500 characters)."""
 
+    def load_ignored_users(self):
+        """Load ignored users from ignored_users.txt file"""
+        try:
+            with open('ignored_users.txt', 'r', encoding='utf-8') as f:
+                users = []
+                for line in f:
+                    line = line.strip()
+                    # Skip empty lines and comments
+                    if line and not line.startswith('#'):
+                        users.append(line.lower())
+                return set(users)
+        except FileNotFoundError:
+            print("Info: ignored_users.txt not found, no users will be ignored")
+            return set()
+        except Exception as e:
+            print(f"Error reading ignored_users.txt: {e}")
+            return set()
+
+    def init_log_file(self):
+        """Initialize the log file with header information"""
+        try:
+            with open(self.log_filename, 'w', encoding='utf-8') as f:
+                f.write(f"=== Twitch Bot Log Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+                f.write(f"Channel: {self.channel_name}\n")
+                f.write(f"Bot Name: {self.bot_name}\n")
+                f.write(f"Ollama Model: {self.ollama_model}\n")
+                f.write("=" * 50 + "\n\n")
+            print(f"Log file created: {self.log_filename}")
+        except Exception as e:
+            print(f"Error creating log file: {e}")
+
+    def log_interaction(self, interaction_type, username, user_message, bot_response=None):
+        """Log an interaction to the log file"""
+        try:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            with open(self.log_filename, 'a', encoding='utf-8') as f:
+                f.write(f"[{timestamp}] {interaction_type}\n")
+                f.write(f"User: {username}\n")
+                f.write(f"Message: {user_message}\n")
+                if bot_response:
+                    f.write(f"Bot Response: {bot_response}\n")
+                f.write("-" * 30 + "\n\n")
+        except Exception as e:
+            print(f"Error writing to log file: {e}")
+
     async def event_ready(self):
         print(f'Bot connected as {self.nick}')
         print(f'Watching channel: {self.channel_name}')
@@ -48,9 +101,19 @@ class SimpleBot(commands.Bot):
         if message.echo:
             return
 
-        # Check if bot is mentioned
+        # Check if bot is mentioned first to determine if we should log
         content = message.content.lower()
-        if self.bot_name in content or f'@{self.bot_name}' in content:
+        bot_mentioned = self.bot_name in content or f'@{self.bot_name}' in content
+
+        # Ignore messages from users in the ignored list
+        if message.author.name.lower() in self.ignored_users:
+            if bot_mentioned:
+                print(f"Ignored user {message.author.name} tried to trigger bot with message: {message.content}")
+                self.log_interaction("IGNORED USER ATTEMPT", message.author.name, message.content)
+            return
+
+        # Handle bot mentions
+        if bot_mentioned:
             await self.handle_mention(message)
 
     async def handle_mention(self, message):
@@ -67,12 +130,17 @@ class SimpleBot(commands.Bot):
 
                 await message.channel.send(f"@{message.author.name} {response_text}")
                 print(f"Response sent: {response_text}")
+                self.log_interaction("SUCCESSFUL RESPONSE", message.author.name, message.content, response_text)
             else:
-                await message.channel.send(f"@{message.author.name} Sorry, I couldn't generate a response!")
+                error_msg = "Sorry, I couldn't generate a response!"
+                await message.channel.send(f"@{message.author.name} {error_msg}")
+                self.log_interaction("FAILED RESPONSE", message.author.name, message.content, error_msg)
 
         except Exception as e:
             print(f"Error handling mention: {e}")
-            await message.channel.send(f"@{message.author.name} Oops, something went wrong!")
+            error_msg = "Oops, something went wrong!"
+            await message.channel.send(f"@{message.author.name} {error_msg}")
+            self.log_interaction("ERROR", message.author.name, message.content, f"Error: {str(e)}")
 
     async def call_ollama(self, user_message, username):
         try:
