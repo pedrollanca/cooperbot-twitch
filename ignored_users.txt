@@ -1,0 +1,6 @@
+# Add usernames (one per line) that the bot should ignore
+# These users' messages will not trigger bot responses
+# Example:
+# streamlabs
+# nightbot
+# moobot
